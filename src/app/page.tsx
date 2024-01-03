@@ -5,6 +5,7 @@ import { backOff } from "exponential-backoff";
 import ReactHlsPlayer from "react-hls-player";
 import { useInterval } from "@/hooks/useInterval";
 import type OBSWebSocketType from "obs-websocket-js";
+import { SceneSelector } from "@/components/scene-selector";
 import { useCallback, useEffect, useState, useRef } from "react";
 import {
   Card,
@@ -26,13 +27,15 @@ const Player = ({ active }: { active: boolean }) => {
   return;
 };
 
+const wait = (fn: () => void, timeout = 3000) => setTimeout(fn, timeout);
+
 export default function Home() {
   const [obs, setObs] = useState<OBSWebSocketType>();
   const [active, setActive] = useState<boolean>(false);
-  const [changed, setChanged] = useState<
-    "Sunday Service Scene" | "Thursday Group Scene" | "StopStream"
-  >();
-  
+  const [currentScene, setCurrentScene] = useState<string>();
+  const [sceneList, setSceneList] = useState<string[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+
   const playerRef = useRef(null);
 
   const connectToOBS = useCallback(async () => {
@@ -45,39 +48,59 @@ export default function Home() {
     );
     const streamStatus = await _obs.call("GetStreamStatus");
 
+    const sceneList = await _obs.call("GetSceneList");
+
+    setSceneList(sceneList.scenes.map((scene) => `${scene.sceneName}`));
+
     setActive(streamStatus.outputActive);
+
+    if (streamStatus.outputActive) {
+      setCurrentScene(sceneList.currentProgramSceneName);
+    }
   }, [obs]);
 
-  const handleStartScene = async (
-    sceneName: "Sunday Service Scene" | "Thursday Group Scene"
-  ) => {
-    setChanged(sceneName);
+  const startStream = () => {
+    obs &&
+      obs
+        .call("StartStream")
+        .then(() =>
+          wait(() => {
+            obs.call("GetStreamStatus").then((streamStatus) => {
+              if (streamStatus.outputActive) {
+                wait(() => {
+                  setActive(streamStatus.outputActive);
+                  setLoading(false);
+                });
+              } else {
+                startStream();
+              }
+            });
+          })
+        )
+        .catch(() => wait(() => startStream()));
+  };
 
-    await backOff(
-      async () => {
-        if (!obs) return;
-        await obs.call("SetCurrentProgramScene", { sceneName });
-        await obs.call("StartStream");
+  const handleStartScene = async (sceneName: string) => {
+    setLoading(true);
+    setCurrentScene(sceneName);
 
-        setTimeout(async () => {
-          const streamStatus = await obs.call("GetStreamStatus");
+    if (!obs) return;
 
-          if (!streamStatus.outputActive) {
-            throw new Error("The stream didn't start");
-          }
+    if (active) {
+      await obs.call("StopStream");
+      setActive(false);
+    }
 
-          setActive(streamStatus.outputActive);
-          setChanged(undefined);
-        }, 10000);
-      },
-      { numOfAttempts: 20, timeMultiple: 4 }
-    );
+    await obs.call("SetCurrentProgramScene", { sceneName });
+
+    startStream();
   };
 
   const handleStopStream = async () => {
     if (!obs) return;
     await obs.call("StopStream");
     setActive(false);
+    setCurrentScene(undefined);
   };
 
   useEffect(() => {
@@ -90,11 +113,13 @@ export default function Home() {
         background:
           "linear-gradient(hsl(var(--stream-primary-50)), hsl(var(--stream-secondary-50)))",
       }}
-      className="dark flex min-h-screen justify-center items-center"
+      className="flex min-h-screen justify-center items-center"
     >
       <Card isFooterBlurred style={{ maxWidth: 640 }}>
         <CardHeader className="justify-between">
-          <div>Madison Place Community Church Live Stream</div>
+          <div>
+            {process.env.NEXT_PUBLIC_STREAM_TITLE ?? `OBS Streaming Service`}
+          </div>
           {active ? (
             <Chip color="success">Online</Chip>
           ) : (
@@ -113,47 +138,37 @@ export default function Home() {
             />
           ) : null}
         </CardBody>
-        <CardFooter className="gap-5 justify-center">
-          <Tooltip
-            crossOffset={5}
-            color={!active && changed ? "warning" : "secondary"}
-            placement="top-start"
-            showArrow={true}
-            content={
-              <div className="p-2 pl-0">
-                {!active && changed
-                  ? "✋🏽 Just a heads up, the stream may take a moment to get going!"
-                  : "👇 You can start a service stream by pressing one of these"}
-              </div>
-            }
-            isOpen={!active}
-          >
+        <Tooltip
+          crossOffset={20}
+          color={!active && currentScene ? "warning" : "secondary"}
+          placement="top-start"
+          showArrow={true}
+          content={
+            <div className="p-2 pl-0">
+              {!active && currentScene
+                ? "✋🏽 Just a heads up, the stream may take a moment to get going!"
+                : "👇 You can start the stream by selecting one from this dropdown"}
+            </div>
+          }
+          isOpen={!active}
+        >
+          <CardFooter className="gap-5">
+            <SceneSelector
+              loading={loading}
+              currentScene={currentScene}
+              sceneList={sceneList}
+              handleStartScene={handleStartScene}
+            />
             <Button
               variant="faded"
-              isLoading={!active && changed === "Sunday Service Scene"}
-              isDisabled={active || changed === "Thursday Group Scene"}
-              onClick={() => handleStartScene("Sunday Service Scene")}
+              isLoading={active && currentScene === "StopStream"}
+              isDisabled={!active}
+              onClick={handleStopStream}
             >
-              Start Sunday Service Stream
+              End Stream
             </Button>
-          </Tooltip>
-          <Button
-            variant="faded"
-            isLoading={!active && changed === "Thursday Group Scene"}
-            isDisabled={active || changed === "Sunday Service Scene"}
-            onClick={() => handleStartScene("Thursday Group Scene")}
-          >
-            Start Thursday Group Stream
-          </Button>
-          <Button
-            variant="faded"
-            isLoading={active && changed === "StopStream"}
-            isDisabled={!active}
-            onClick={handleStopStream}
-          >
-            End Stream
-          </Button>
-        </CardFooter>
+          </CardFooter>
+        </Tooltip>
       </Card>
     </main>
   );
