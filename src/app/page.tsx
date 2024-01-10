@@ -1,12 +1,15 @@
 "use client";
-import dynamic from "next/dynamic";
+
+import { wait } from "@/utils";
 import OBSWebSocket from "obs-websocket-js";
-import { backOff } from "exponential-backoff";
 import ReactHlsPlayer from "react-hls-player";
-import { useInterval } from "@/hooks/useInterval";
 import type OBSWebSocketType from "obs-websocket-js";
 import { SceneSelector } from "@/components/scene-selector";
-import { useCallback, useEffect, useState, useRef } from "react";
+import { StreamActionKind, streamReducer } from "@/types/stream-state";
+import { useCallback, useReducer, useEffect, useState, useRef } from "react";
+
+import type { StreamState, StreamAction } from "@/types/stream-state";
+
 import {
   Card,
   Chip,
@@ -15,33 +18,25 @@ import {
   CardBody,
   CardHeader,
   CardFooter,
-  CircularProgress,
 } from "@nextui-org/react";
 
-const ReactPlayer = dynamic(() => import("react-player"), {
-  ssr: false,
-  loading: () => <CircularProgress />,
-});
-
-const Player = ({ active }: { active: boolean }) => {
-  return;
-};
-
-const wait = (fn: () => void, timeout = 3000) => setTimeout(fn, timeout);
-
 export default function Home() {
-  const [obs, setObs] = useState<OBSWebSocketType>();
-  const [active, setActive] = useState<boolean>(false);
-  const [currentScene, setCurrentScene] = useState<string>();
-  const [sceneList, setSceneList] = useState<string[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [state, dispatch] = useReducer(streamReducer, {
+    active: true,
+    loading: false,
+    sceneList: [],
+  });
+
+  const { obs, active, loading, currentScene, sceneList } = state;
 
   const playerRef = useRef(null);
 
   const connectToOBS = useCallback(async () => {
     if (obs) return;
     const _obs = new OBSWebSocket();
-    setObs(_obs);
+
+    dispatch({ type: StreamActionKind.SETOBS, payload: _obs });
+
     await _obs.connect(
       process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_SERVER,
       process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_PASSWORD
@@ -50,12 +45,22 @@ export default function Home() {
 
     const sceneList = await _obs.call("GetSceneList");
 
-    setSceneList(sceneList.scenes.map((scene) => `${scene.sceneName}`));
+    dispatch({
+      type: StreamActionKind.SCENELIST,
+      payload: sceneList.scenes.map((scene) => `${scene.sceneName}`),
+    });
 
-    setActive(streamStatus.outputActive);
+    dispatch({
+      type: streamStatus.outputActive
+        ? StreamActionKind.ACTIVE
+        : StreamActionKind.INACTIVE,
+    });
 
     if (streamStatus.outputActive) {
-      setCurrentScene(sceneList.currentProgramSceneName);
+      dispatch({
+        type: StreamActionKind.SCENE,
+        payload: sceneList.currentProgramSceneName,
+      });
     }
   }, [obs]);
 
@@ -65,30 +70,36 @@ export default function Home() {
         .call("StartStream")
         .then(() =>
           wait(() => {
-            obs.call("GetStreamStatus").then((streamStatus) => {
-              if (streamStatus.outputActive) {
-                wait(() => {
-                  setActive(streamStatus.outputActive);
-                  setLoading(false);
-                });
-              } else {
-                startStream();
-              }
-            });
+            obs
+              .call("GetStreamStatus")
+              .then((streamStatus: { outputActive: boolean }) => {
+                if (streamStatus.outputActive) {
+                  wait(() => {
+                    dispatch({
+                      type: StreamActionKind.ACTIVE,
+                    });
+                    dispatch({ type: StreamActionKind.NOTLOADING });
+                  });
+                } else {
+                  startStream();
+                }
+              });
           })
         )
         .catch(() => wait(() => startStream()));
   };
 
   const handleStartScene = async (sceneName: string) => {
-    setLoading(true);
-    setCurrentScene(sceneName);
+    dispatch({ type: StreamActionKind.LOADING });
+    dispatch({ type: StreamActionKind.SCENE, payload: sceneName });
 
     if (!obs) return;
 
     if (active) {
       await obs.call("StopStream");
-      setActive(false);
+      dispatch({
+        type: StreamActionKind.INACTIVE,
+      });
     }
 
     await obs.call("SetCurrentProgramScene", { sceneName });
@@ -99,8 +110,10 @@ export default function Home() {
   const handleStopStream = async () => {
     if (!obs) return;
     await obs.call("StopStream");
-    setActive(false);
-    setCurrentScene(undefined);
+    dispatch({
+      type: StreamActionKind.INACTIVE,
+    });
+    dispatch({ type: StreamActionKind.SCENE });
   };
 
   useEffect(() => {
@@ -154,7 +167,7 @@ export default function Home() {
         >
           <CardFooter className="gap-5">
             <SceneSelector
-              loading={loading}
+              loading={loading ?? false}
               currentScene={currentScene}
               sceneList={sceneList}
               handleStartScene={handleStartScene}
