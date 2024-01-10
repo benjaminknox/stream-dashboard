@@ -3,6 +3,7 @@
 import { wait } from "@/utils";
 import OBSWebSocket from "obs-websocket-js";
 import ReactHlsPlayer from "react-hls-player";
+import { useInterval } from "@/hooks/useInterval";
 import type OBSWebSocketType from "obs-websocket-js";
 import { SceneSelector } from "@/components/scene-selector";
 import { StreamActionKind, streamReducer } from "@/types/stream-state";
@@ -22,7 +23,7 @@ import {
 
 export default function Home() {
   const [state, dispatch] = useReducer(streamReducer, {
-    active: true,
+    active: false,
     loading: false,
     sceneList: [],
   });
@@ -32,35 +33,50 @@ export default function Home() {
   const playerRef = useRef(null);
 
   const connectToOBS = useCallback(async () => {
-    if (obs) return;
     const _obs = new OBSWebSocket();
+
+    try {
+      await _obs.connect(
+        process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_SERVER,
+        process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_PASSWORD
+      );
+    } catch {
+      console.warn("OBS websockets is not present, resetting");
+
+      dispatch({ type: StreamActionKind.SETOBS });
+      dispatch({ type: StreamActionKind.SCENELIST, payload: [] });
+      return;
+    }
+
+    if (obs) return;
 
     dispatch({ type: StreamActionKind.SETOBS, payload: _obs });
 
-    await _obs.connect(
-      process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_SERVER,
-      process.env.NEXT_PUBLIC_OBS_WEBSOCKETS_PASSWORD
-    );
-    const streamStatus = await _obs.call("GetStreamStatus");
+    try {
+      const streamStatus = await _obs.call("GetStreamStatus");
+      const sceneList = await _obs.call("GetSceneList");
 
-    const sceneList = await _obs.call("GetSceneList");
-
-    dispatch({
-      type: StreamActionKind.SCENELIST,
-      payload: sceneList.scenes.map((scene) => `${scene.sceneName}`),
-    });
-
-    dispatch({
-      type: streamStatus.outputActive
-        ? StreamActionKind.ACTIVE
-        : StreamActionKind.INACTIVE,
-    });
-
-    if (streamStatus.outputActive) {
       dispatch({
-        type: StreamActionKind.SCENE,
-        payload: sceneList.currentProgramSceneName,
+        type: StreamActionKind.SCENELIST,
+        payload: sceneList.scenes.map((scene) => `${scene.sceneName}`),
       });
+
+      dispatch({
+        type: streamStatus.outputActive
+          ? StreamActionKind.ACTIVE
+          : StreamActionKind.INACTIVE,
+      });
+
+      if (streamStatus.outputActive) {
+        dispatch({
+          type: StreamActionKind.SCENE,
+          payload: sceneList.currentProgramSceneName,
+        });
+      }
+    } catch {
+      console.warn("OBS Websockets are not ready, resetting");
+      dispatch({ type: StreamActionKind.SETOBS });
+      dispatch({ type: StreamActionKind.SCENELIST, payload: [] });
     }
   }, [obs]);
 
@@ -116,9 +132,9 @@ export default function Home() {
     dispatch({ type: StreamActionKind.SCENE });
   };
 
-  useEffect(() => {
+  useInterval(() => {
     connectToOBS();
-  }, [connectToOBS]);
+  }, 2000);
 
   return (
     <main
