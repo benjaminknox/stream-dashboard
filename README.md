@@ -2,6 +2,8 @@
 
 This is an OBS Studio stream dashboard. It currently has a UI control that can turn a defined scene in OBS studio on and start streaming, as well as a control to stop the stream.
 
+https://github.com/benjaminknox/stream-dashboard/assets/5668789/a6d69fd3-acff-4dec-8759-ab5f4f01c06a
+
 ### Prerequisite
 
 - An OBS studio instance set up with websockets enabled, [see here for details](https://github.com/obsproject/obs-websocket)
